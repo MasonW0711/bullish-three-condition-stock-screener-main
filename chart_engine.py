@@ -1,4 +1,14 @@
-"""Chart rendering helpers — candlestick with attack signal markers."""
+"""Chart rendering — Plotly candlestick with attack lines and signal markers.
+
+The chart shows, for a single stock:
+  - Candlestick
+  - Volume
+  - red_line and black_line
+  - Big Red Attack Success markers
+  - Big Black Attack Success markers
+  - Bullish Three-Condition Signal markers
+  - Bearish Three-Condition Signal markers
+"""
 
 from __future__ import annotations
 
@@ -6,66 +16,41 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# Marker styles for each of the four attack signals.
-_SIGNAL_MARKERS = {
-    "red_attack_success": {
-        "label": "大紅攻成功",
-        "color": "#dc2626",       # red
-        "symbol": "triangle-up",
-        "y_col": "High",
-        "y_offset_sign": +1,
-    },
-    "red_attack_failed": {
-        "label": "大紅攻失敗",
-        "color": "#f97316",       # orange
-        "symbol": "x",
-        "y_col": "Low",
-        "y_offset_sign": -1,
-    },
-    "black_attack_success": {
-        "label": "大黑攻成功",
-        "color": "#1d4ed8",       # dark blue
-        "symbol": "triangle-down",
-        "y_col": "Low",
-        "y_offset_sign": -1,
-    },
-    "black_attack_failed": {
-        "label": "大黑攻失敗",
-        "color": "#16a34a",       # green
-        "symbol": "triangle-up",
-        "y_col": "High",
-        "y_offset_sign": +1,
-    },
-}
+# Reference lines drawn as step lines across the chart.
+_LINE_STYLES = [
+    ("red_line", "#dc2626", "red_line"),
+    ("black_line", "#111827", "black_line"),
+]
 
-# Base line styles for red_base and black_base reference lines.
-_BASE_LINE_STYLES = [
-    ("red_base",   "#dc2626", "多攻基準（紅攻 prev_close）"),
-    ("black_base", "#1d4ed8", "空攻基準（黑攻 prev_close）"),
+# Signal markers: column -> (label, color, symbol, y-source column, offset direction).
+_MARKERS = [
+    ("red_attack_success", "Big Red Attack Success", "#dc2626", "triangle-up", "High", +1),
+    ("black_attack_success", "Big Black Attack Success", "#111827", "triangle-down", "Low", -1),
+    ("final_bull_signal", "Bullish Three-Condition Signal", "#16a34a", "star", "Low", -1),
+    ("final_bear_signal", "Bearish Three-Condition Signal", "#7c3aed", "star", "High", +1),
 ]
 
 
 def create_stock_chart(stock_df: pd.DataFrame, timeframe_label: str):
-    """Create an interactive candlestick chart for a single stock.
+    """Build an interactive candlestick chart for one stock.
 
-    Markers indicate each of the four attack signal types.
-    No base lines are drawn.
+    Returns (figure, None) on success or (None, message) when there is not enough
+    data to draw a reliable chart.
     """
     if stock_df is None or stock_df.empty:
-        return None, "目前沒有可供顯示的資料。"
+        return None, "No data available to display."
 
-    required_columns = {"Date", "StockCode", "Open", "High", "Low", "Close", "Volume"}
-    missing_columns = required_columns.difference(stock_df.columns)
-    if missing_columns:
-        return None, f"圖表資料缺少必要欄位：{sorted(missing_columns)}"
+    required = {"Date", "StockCode", "Open", "High", "Low", "Close", "Volume"}
+    missing = required.difference(stock_df.columns)
+    if missing:
+        return None, f"Chart data is missing required columns: {sorted(missing)}"
 
     chart_df = stock_df.sort_values("Date").copy()
     if chart_df[["Open", "High", "Low", "Close"]].dropna(how="any").shape[0] < 2:
-        return None, "歷史資料不足，無法為所選股票繪製可靠圖表。"
+        return None, "Not enough historical data to draw a reliable chart."
 
     stock_code = str(chart_df["StockCode"].iloc[-1])
 
-    # Volume bar colours: green when Close >= Open, red otherwise.
     volume_colors = [
         "#16a34a" if close >= open_price else "#dc2626"
         for open_price, close in zip(chart_df["Open"], chart_df["Close"])
@@ -87,75 +72,63 @@ def create_stock_chart(stock_df: pd.DataFrame, timeframe_label: str):
             high=chart_df["High"],
             low=chart_df["Low"],
             close=chart_df["Close"],
-            name="K 線",
+            name="Candlestick",
+            increasing_line_color="#dc2626",
+            decreasing_line_color="#16a34a",
         ),
         row=1,
         col=1,
     )
 
-    # --- Base lines: red_base and black_base as dashed reference lines ---
-    for base_col, base_color, base_label in _BASE_LINE_STYLES:
-        if base_col not in chart_df.columns:
-            continue
-        base_series = chart_df[base_col]
-        if base_series.isna().all():
+    # --- red_line / black_line as dashed step lines ---
+    for col_name, color, label in _LINE_STYLES:
+        if col_name not in chart_df.columns or chart_df[col_name].isna().all():
             continue
         fig.add_trace(
             go.Scatter(
                 x=chart_df["Date"],
-                y=base_series,
+                y=chart_df[col_name],
                 mode="lines",
-                line={"color": base_color, "width": 1.5, "dash": "dash"},
-                name=base_label,
+                line={"color": color, "width": 1.5, "dash": "dash", "shape": "hv"},
+                name=label,
                 connectgaps=False,
             ),
             row=1,
             col=1,
         )
 
-    # --- Attack signal markers ---
+    # --- Signal markers ---
     price_range = chart_df["High"].max() - chart_df["Low"].min()
-    offset_pct = 0.015  # marker offset as fraction of price range
-    y_offset = price_range * offset_pct if price_range > 0 else 0
+    y_offset = price_range * 0.02 if price_range and price_range > 0 else 0
 
-    for col_name, cfg in _SIGNAL_MARKERS.items():
+    for col_name, label, color, symbol, y_col, sign in _MARKERS:
         if col_name not in chart_df.columns:
             continue
-        signal_rows = chart_df[chart_df[col_name].fillna(False)]
-        if signal_rows.empty:
+        rows = chart_df[chart_df[col_name].fillna(False).astype(bool)]
+        if rows.empty:
             continue
-
-        y_base = signal_rows[cfg["y_col"]]
-        y_values = y_base + cfg["y_offset_sign"] * y_offset
-
         fig.add_trace(
             go.Scatter(
-                x=signal_rows["Date"],
-                y=y_values,
+                x=rows["Date"],
+                y=rows[y_col] + sign * y_offset,
                 mode="markers",
-                name=cfg["label"],
-                marker={
-                    "color": cfg["color"],
-                    "size": 10,
-                    "symbol": cfg["symbol"],
-                },
-                hovertemplate=(
-                    "%{x|%Y-%m-%d}<br>"
-                    + cfg["label"]
-                    + "<br>收盤：%{customdata:.2f}<extra></extra>"
-                ),
-                customdata=signal_rows["Close"].values,
+                name=label,
+                marker={"color": color, "size": 11, "symbol": symbol,
+                        "line": {"color": "#ffffff", "width": 1}},
+                hovertemplate="%{x|%Y-%m-%d}<br>" + label
+                + "<br>Close: %{customdata:.2f}<extra></extra>",
+                customdata=rows["Close"].values,
             ),
             row=1,
             col=1,
         )
 
-    # --- Volume bars ---
+    # --- Volume ---
     fig.add_trace(
         go.Bar(
             x=chart_df["Date"],
             y=chart_df["Volume"],
-            name="成交量",
+            name="Volume",
             marker={"color": volume_colors},
         ),
         row=2,
@@ -163,13 +136,12 @@ def create_stock_chart(stock_df: pd.DataFrame, timeframe_label: str):
     )
 
     fig.update_layout(
-        title=f"{stock_code} 大紅攻 / 大黑攻 訊號圖（{timeframe_label}）",
+        title=f"{stock_code} — Big Red / Big Black Attack ({timeframe_label})",
         xaxis_rangeslider_visible=False,
         legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "x": 0},
         margin={"l": 20, "r": 20, "t": 70, "b": 20},
         height=720,
     )
-    fig.update_yaxes(title_text="價格", row=1, col=1)
-    fig.update_yaxes(title_text="成交量", row=2, col=1)
-
+    fig.update_yaxes(title_text="Price", row=1, col=1)
+    fig.update_yaxes(title_text="Volume", row=2, col=1)
     return fig, None

@@ -2,3 +2,6 @@ __pycache__/
 *.py[cod]
 .DS_Store
 .streamlit/
+
+# Local backup of the previous advanced variant (not for upstream)
+legacy_variant_backup/
