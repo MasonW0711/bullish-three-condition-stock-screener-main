@@ -1,132 +1,197 @@
-# 大紅攻 / 大黑攻 訊號選股系統
+# Bullish / Bearish Three-Condition Stock Screener
 
-> **聲明：本工具僅供研究與篩選參考，不構成任何投資建議。**
+> **Disclaimer: This tool is for stock research and screening only. It is NOT investment advice.**
 
----
-
-## 系統目標
-
-自動下載台灣上市與上櫃股票的 OHLCV 資料，依據「**大紅攻 / 大黑攻**」策略偵測攻擊訊號，篩選出符合條件的股票供研究參考。
+A Python + Streamlit screener that automatically downloads stock OHLCV data from the
+internet (via `yfinance`) and screens both the **Bullish** and **Bearish**
+**Three-Condition Method**, based on **Big Red Attack** / **Big Black Attack** lines.
 
 ---
 
-## 策略定義
+## Installation
 
-攻擊方向由**開盤價與前一根收盤價**的關係決定；收盤價只決定攻擊是否成功。
-
-**前提：**
-```
-prev_close = 前一根 K 棒的收盤價
-```
-
-| 訊號 | 條件 | 說明 |
-|------|------|------|
-| 大紅攻成功 | `Open > prev_close` 且 `Close > prev_close` | 多頭開高並收高 |
-| 大紅攻失敗 | `Open > prev_close` 且 `Close < prev_close` | 多頭開高但收低（≠ 大黑攻） |
-| 大黑攻成功 | `Open < prev_close` 且 `Close < prev_close` | 空頭開低並收低 |
-| 大黑攻失敗 | `Open < prev_close` 且 `Close > prev_close` | 空頭開低但收高（≠ 大紅攻） |
-
-> **重要：失敗的大紅攻不等於大黑攻；失敗的大黑攻不等於大紅攻。**
-
----
-
-## 功能
-
-- 自動抓取 TWSE 上市與上櫃普通股清單（約 1900+ 檔）
-- 支援日 K / 週 K / 月 K 分析（週/月 K 由日線 Resample 產生）
-- 成交量前置過濾（最小成交量，單位：張）
-- 回看 N 根 K 棒視窗篩選
-- 互動式 K 線圖（含四種攻擊訊號標記）
-- Excel 匯出（All_Data / Matching_Signals / Latest_Summary / Failed_Downloads / Parameter_Settings）
-
----
-
-## 安裝與執行
-
-### 本機執行
+Requires **Python 3.11+**.
 
 ```bash
+# (optional) create and activate a virtual environment
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+
 pip install -r requirements.txt
+```
+
+## Running the app
+
+```bash
 streamlit run app.py
 ```
 
-### Streamlit Cloud 部署
+The app opens in your browser. Configure the inputs in the sidebar and click
+**Run Screening**.
 
-1. Fork / Push 此 repo 至 GitHub
-2. 至 [share.streamlit.io](https://share.streamlit.io) 建立新應用程式
-3. 指向 `app.py`，Python 版本 3.11+
-4. 點擊 Deploy
+## Deploying to Streamlit Cloud
 
----
+1. Push this repository to GitHub.
+2. Go to [share.streamlit.io](https://share.streamlit.io) and create a new app.
+3. Select the repository and branch, and set the main file to **`app.py`**.
+4. Streamlit Cloud installs `requirements.txt` automatically and runs the app.
 
-## 側邊欄參數說明
-
-| 參數 | 預設值 | 說明 |
-|------|--------|------|
-| 自動抓取全市場 | 開啟 | 開啟：自動抓取 TWSE 全市場；關閉：手動輸入股票代號 |
-| 開始日期 | 今天-2年 | 資料下載起始日 |
-| 結束日期 | 今天 | 資料下載截止日 |
-| 分析週期 | 日 K | 日 K / 週 K / 月 K |
-| 最小成交量（張） | 2000 | Volume ≥ 此值（單位：張，內部換算×1000股）；設 0 = 不篩選 |
-| 回看 K 棒數 | 10 | 只顯示最近 N 根 K 棒內出現攻擊訊號的資料 |
+No local absolute paths are used, so the project runs unchanged on Streamlit Cloud.
 
 ---
 
-## 輸入格式
+## How to use
 
-手動模式下，每行一個股票代號：
+In the sidebar you can:
+
+- Paste a **stock list** (one symbol per line), or
+- Upload a **CSV** that contains a `StockCode` column (see `sample_stock_list.csv`).
+- Choose a **date range** (`start_date`, `end_date`).
+- Choose the **analysis timeframe**: Daily K / Weekly K / Monthly K.
+- Set the **minimum volume** (default `2000`).
+- Set the **lookback bars** (default `10`).
+- Choose a **signal direction filter**: Both / Bullish only / Bearish only.
+
+Default stock list:
 
 ```
 2330.TW
 2317.TW
+2382.TW
+2474.TW
 6182.TWO
 ```
 
-- 上市股票使用 `.TW` 後綴
-- 上櫃股票使用 `.TWO` 後綴
+After clicking **Run Screening** you get: a download status panel, a matching-signals
+table, a latest-summary table, an interactive candlestick chart, and an Excel download.
 
 ---
 
-## 週 K / 月 K 說明
+## Strategy definitions
 
-週 K / 月 K 由日線資料 Resample 產生，**不直接使用 yfinance 週線/月線**（避免資料格式不一致）。
+`prev_close` = the **previous K-bar's close** (computed separately per stock).
 
-| 欄位 | 計算方式 |
-|------|----------|
-| Open | 期間第一個交易日開盤 |
-| High | 期間最高價 |
-| Low | 期間最低價 |
-| Close | 期間最後一個交易日收盤 |
-| Volume | 期間成交量加總 |
-| Date | 期間最後一個交易日 |
+The attack **direction** is determined **only** by `Open` versus `prev_close`.
+The `Close` **only** decides whether the attack *succeeded* or *failed*.
+**A failed attack never becomes the opposite-side attack.**
 
----
+### Big Red Attack
 
-## 結果說明
+- **Success**: `Open > prev_close` **AND** `Close > prev_close` → creates a **red_line**.
+- **Failed**: `Open > prev_close` **AND** `Close < prev_close` → *only* a failed bullish
+  attack. **Not** a Big Black Attack. Does **not** create or update `black_line`.
 
-### 訊號匹配結果
+### Big Black Attack
 
-回看視窗內，成交量達標且有任一攻擊訊號的所有 K 棒。
+- **Success**: `Open < prev_close` **AND** `Close < prev_close` → creates a **black_line**.
+- **Failed**: `Open < prev_close` **AND** `Close > prev_close` → *only* a failed bearish
+  attack. **Not** a Big Red Attack. Does **not** create or update `red_line`.
 
-### 最新訊號摘要
+If `Open == prev_close`, the bar is **No Attack**.
 
-每股一列，顯示回看視窗內最新一筆攻擊訊號。
+### red_line
 
----
-
-## 技術依賴
+Created **only** by Big Red Attack Success:
 
 ```
-streamlit
-pandas
-numpy
-yfinance
-plotly
-openpyxl
-requests
-lxml
+red_line_raw = prev_close   (only on red_attack_success bars, else NaN)
+red_line     = forward-fill of red_line_raw, separately per StockCode
+```
+
+### black_line
+
+Created **only** by Big Black Attack Success:
+
+```
+black_line_raw = prev_close (only on black_attack_success bars, else NaN)
+black_line     = forward-fill of black_line_raw, separately per StockCode
 ```
 
 ---
 
-*本工具僅供投資研究篩選參考，並非投資建議。投資決策請自行判斷。*
+## Bullish Three-Condition Method
+
+Within the most recent `lookback_bars` K-bars, at least **2 of 3** must be true:
+
+- **A** — Big Red Attack Success appears.
+- **B** — Break above the latest `black_line`:
+  `previous Close <= previous black_line` **AND** `current Close > current black_line`.
+- **C** — Retest `red_line` or `black_line` as **support** and hold:
+  `Low <= line_price` **AND** `Close >= line_price`.
+
+```
+bull_score        = bull_A_window + bull_B_window + bull_C_window
+bull_signal       = bull_score >= 2
+final_bull_signal = bull_signal AND volume_pass
+```
+
+## Bearish Three-Condition Method
+
+Within the most recent `lookback_bars` K-bars, at least **2 of 3** must be true:
+
+- **A** — Big Black Attack Success appears.
+- **B** — Break below the latest `red_line`:
+  `previous Close >= previous red_line` **AND** `current Close < current red_line`.
+- **C** — Retest `red_line` or `black_line` as **resistance** and fail:
+  `High >= line_price` **AND** `Close <= line_price`.
+
+```
+bear_score        = bear_A_window + bear_B_window + bear_C_window
+bear_signal       = bear_score >= 2
+final_bear_signal = bear_signal AND volume_pass
+```
+
+The A / B / C conditions are calculated **independently**. They do not need to appear
+in order, do not need to be consecutive, and can appear on the same K-bar.
+
+---
+
+## Daily K / Weekly K / Monthly K
+
+Only **daily** data is downloaded. Weekly and Monthly bars are produced by
+**resampling the daily OHLCV** per stock (never downloaded directly):
+
+| Field  | Weekly / Monthly value                  |
+|--------|------------------------------------------|
+| Open   | first trading day's open in the period   |
+| High   | highest high in the period               |
+| Low    | lowest low in the period                 |
+| Close  | last trading day's close in the period   |
+| Volume | sum of volume in the period              |
+| Date   | last trading day's date in the period    |
+
+Each stock is resampled separately; stocks are never mixed. A `Timeframe` column
+records `D`, `W`, or `M`.
+
+## Volume filter
+
+```
+volume_pass = Volume >= min_volume     (default min_volume = 2000)
+```
+
+For Weekly / Monthly K, `Volume` is the resampled (summed) period volume.
+
+## Lookback bars
+
+For each stock, only the most recent `lookback_bars` K-bars are checked
+(`lookback_rank = 1` is the most recent bar). The results include bars where
+`final_bull_signal` or `final_bear_signal` is True within that window, plus a
+latest-summary table with one row per stock per signal direction.
+
+---
+
+## Excel export
+
+The downloadable workbook contains seven sheets: `All_Data`, `Matching_Signals`,
+`Bullish_Signals`, `Bearish_Signals`, `Latest_Summary`, `Failed_Downloads`, and
+`Parameter_Settings`.
+
+## Testing the sample stock list
+
+`sample_stock_list.csv` contains the default symbols. Upload it in the sidebar (or
+just click **Run Screening** with the default text-area list) to verify the full
+download → resample → signal → display → export flow end to end.
+
+---
+
+*This tool is for stock research and screening only. It is not investment advice.*

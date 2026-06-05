@@ -1,29 +1,42 @@
-"""Signal calculation engine — Big Red/Black Attack signals + Three Methods conditions.
+"""Signal calculation engine for the Bullish / Bearish Three-Condition Method.
 
-Attack direction: Open vs prev_close only. Failed attacks never convert to opposite signals.
+Core attack logic
+-----------------
+prev_close = previous K-bar close (per StockCode).
 
-Three Methods:
-  - red_base  : prev_close at the most recent red_attack_success bar (forward-filled)
-  - black_base: prev_close at the most recent black_attack_success bar (forward-filled)
+The attack DIRECTION is determined ONLY by Open vs prev_close.
+The Close ONLY decides whether the attack succeeded or failed.
+A failed attack NEVER converts into the opposite-side attack.
 
-Bullish Three Methods conditions (checked within rolling lookback window):
-  cond_1: red_attack_success appeared
-  cond_2: Open broke above black_base
-  cond_3: Low touched within ±pullback_pct of (black_base or red_base),
-          AND Close did not close below the reference (pullback not failed)
+    red_attack_success   = Open > prev_close AND Close > prev_close
+    red_attack_failed    = Open > prev_close AND Close < prev_close   (NOT a black attack)
+    black_attack_success = Open < prev_close AND Close < prev_close
+    black_attack_failed  = Open < prev_close AND Close > prev_close   (NOT a red attack)
 
-Bearish Three Methods conditions:
-  cond_1: black_attack_success appeared
-  cond_2: Open broke below red_base
-  cond_3: High touched within ±pullback_pct of (black_base or red_base),
-          AND Close did not close above the reference (pullback not failed)
+Lines
+-----
+red_line   is created ONLY by Big Red Attack Success  (red_line_raw   = prev_close, then ffill).
+black_line is created ONLY by Big Black Attack Success (black_line_raw = prev_close, then ffill).
+Failed attacks never create or update the opposite line.
 
-At least min_conditions (default 2) must be satisfied for a qualifying signal.
-pullback_pct (default 2%) controls the valid zone around the reference price.
-Final Three Methods direction is exclusive:
-  - Bullish if bullish_methods_count > bearish_methods_count
-  - Bearish if bearish_methods_count > bullish_methods_count
-  - None if equal
+Three-Condition Methods (within the recent lookback_bars window)
+----------------------------------------------------------------
+Bullish — at least 2 of:
+    A. Big Red Attack Success appears.
+    B. Break above the latest black_line:
+         previous Close <= previous black_line AND current Close > current black_line
+    C. Retest red_line or black_line as support and hold:
+         Low <= line_price AND Close >= line_price
+
+Bearish — at least 2 of:
+    A. Big Black Attack Success appears.
+    B. Break below the latest red_line:
+         previous Close >= previous red_line AND current Close < current red_line
+    C. Retest red_line or black_line as resistance and fail:
+         High >= line_price AND Close <= line_price
+
+A / B / C are calculated independently (no if/elif mutual exclusion); they do not
+need to appear in order, be consecutive, or appear on separate K-bars.
 """
 
 from __future__ import annotations
@@ -32,37 +45,49 @@ import numpy as np
 import pandas as pd
 
 
+def _ensure_sorted(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy sorted by StockCode then Date — required for shift/ffill/rolling."""
+    return df.sort_values(["StockCode", "Date"]).reset_index(drop=True)
+
+
 def add_prev_close(df: pd.DataFrame) -> pd.DataFrame:
-    """Add grouped prev_close = previous K-bar close, per StockCode."""
-    output = df.sort_values(["StockCode", "Date"]).copy()
+    """Add prev_close = previous K-bar close, computed separately per StockCode."""
+    output = _ensure_sorted(df)
     output["prev_close"] = output.groupby("StockCode")["Close"].shift(1)
     return output
 
 
 def add_attack_signals(df: pd.DataFrame) -> pd.DataFrame:
-    """Detect Big Red / Big Black attack signals using explicit boolean masks.
+    """Detect Big Red / Big Black attack signals using explicit, independent masks.
 
-    Each of the four signals is calculated independently.
-    A failed attack is NOT converted to an opposite-side attack.
+    Each of the four signals is an independent boolean mask. There is NO if/elif
+    logic, so a failed attack can never be reclassified as the opposite attack.
     """
     output = df.copy()
 
-    has_prev = output["prev_close"].notna()
-    opens_above = output["Open"] > output["prev_close"]
-    opens_below = output["Open"] < output["prev_close"]
-    closes_above = output["Close"] > output["prev_close"]
-    closes_below = output["Close"] < output["prev_close"]
+    prev_close = output["prev_close"]
+    has_prev = prev_close.notna()
+    opens_above = output["Open"] > prev_close
+    opens_below = output["Open"] < prev_close
+    closes_above = output["Close"] > prev_close
+    closes_below = output["Close"] < prev_close
 
-    # Each signal is a strictly independent boolean mask — no if/elif conversion.
+    # Independent boolean masks — Open decides direction, Close decides success/failure.
     output["red_attack_success"] = has_prev & opens_above & closes_above
     output["red_attack_failed"] = has_prev & opens_above & closes_below
     output["black_attack_success"] = has_prev & opens_below & closes_below
     output["black_attack_failed"] = has_prev & opens_below & closes_above
 
+    # attack_type / attack_direction come from Open only (the attack attempt direction).
     output["attack_type"] = np.select(
-        [opens_above & has_prev, opens_below & has_prev],
+        [has_prev & opens_above, has_prev & opens_below],
         ["Big Red Attack", "Big Black Attack"],
         default="No Attack",
+    )
+    output["attack_direction"] = np.select(
+        [has_prev & opens_above, has_prev & opens_below],
+        ["Bullish", "Bearish"],
+        default="None",
     )
     output["attack_result"] = np.select(
         [
@@ -70,11 +95,6 @@ def add_attack_signals(df: pd.DataFrame) -> pd.DataFrame:
             output["red_attack_failed"] | output["black_attack_failed"],
         ],
         ["Success", "Failed"],
-        default="None",
-    )
-    output["attack_direction"] = np.select(
-        [opens_above & has_prev, opens_below & has_prev],
-        ["Bullish", "Bearish"],
         default="None",
     )
     output["signal_summary"] = np.select(
@@ -95,231 +115,172 @@ def add_attack_signals(df: pd.DataFrame) -> pd.DataFrame:
     return output
 
 
-def add_base_lines(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute red_base and black_base reference levels per StockCode.
+def add_attack_lines(df: pd.DataFrame) -> pd.DataFrame:
+    """Create red_line and black_line, each from its own success signal only.
 
-    red_base   = prev_close at the most recent red_attack_success bar (forward-filled).
-    black_base = prev_close at the most recent black_attack_success bar (forward-filled).
+    red_line_raw   = prev_close where red_attack_success   else NaN, ffill per stock.
+    black_line_raw = prev_close where black_attack_success else NaN, ffill per stock.
 
-    These are the gap-origin levels from which each attack launched, and serve as
-    the 'bottom of bullish candle' and 'top of bearish candle' reference prices.
+    Failed attacks never create or update the opposite line.
     """
     output = df.copy()
 
-    # Stamp the value at signal bars only, then forward-fill within each stock group.
-    output["_red_sig"] = output["prev_close"].where(output["red_attack_success"])
-    output["_blk_sig"] = output["prev_close"].where(output["black_attack_success"])
-
-    output["red_base"] = output.groupby("StockCode")["_red_sig"].transform("ffill")
-    output["black_base"] = output.groupby("StockCode")["_blk_sig"].transform("ffill")
-
-    return output.drop(columns=["_red_sig", "_blk_sig"])
-
-
-def add_three_methods_conditions(df: pd.DataFrame, lookback_bars: int, pullback_pct: float = 0.02) -> pd.DataFrame:
-    """Compute Three Methods conditions for each bar using a rolling lookback window.
-
-    Per-bar conditions:
-      bull_cond_1 = red_attack_success
-      bull_cond_2 = Open > black_base  (broke above bearish attack origin)
-      bull_cond_3 = Low within ±pullback_pct of (black_base or red_base)
-                    AND Close >= ref  (close did not close below reference)
-
-      bear_cond_1 = black_attack_success
-      bear_cond_2 = Open < red_base    (broke below bullish attack origin)
-      bear_cond_3 = High within ±pullback_pct of (black_base or red_base)
-                    AND Close <= ref  (close did not close above reference)
-
-    Each *_in_window column is True if the condition was True in ANY of the last
-    lookback_bars K-bars for that stock.  Score columns sum the three window flags.
-
-    Args:
-        pullback_pct: fraction (e.g. 0.02 = 2%). Low/High must be within this
-                      percentage of the reference price, AND the close must not
-                      close beyond the reference.
-    """
-    output = df.copy()
-    for column in ["Open", "High", "Low", "Close", "red_base", "black_base"]:
-        if column in output.columns:
-            output[column] = pd.to_numeric(output[column], errors="coerce")
-
-    has_rb = output["red_base"].notna()
-    has_bb = output["black_base"].notna()
-
-    # Per-bar conditions.
-    output["bull_cond_1"] = output["red_attack_success"].fillna(False)
-    output["bull_cond_2"] = has_bb & (output["Open"] > output["black_base"])
-
-    # Bullish pullback helper: Low within ±pct of ref AND Close does not close below ref.
-    def _bull_pb(ref_col: str) -> pd.Series:
-        has_ref = output[ref_col].notna()
-        ref = output[ref_col]
-        low_in_zone = (
-            (output["Low"] >= ref * (1 - pullback_pct))
-            & (output["Low"] <= ref * (1 + pullback_pct))
-        )
-        close_ok = output["Close"] >= ref
-        return has_ref & low_in_zone & close_ok
-
-    output["bull_cond_3"] = _bull_pb("black_base") | _bull_pb("red_base")
-
-    output["bear_cond_1"] = output["black_attack_success"].fillna(False)
-    output["bear_cond_2"] = has_rb & (output["Open"] < output["red_base"])
-
-    # Bearish pullback helper: High within ±pct of ref AND Close does not close above ref.
-    def _bear_pb(ref_col: str) -> pd.Series:
-        has_ref = output[ref_col].notna()
-        ref = output[ref_col]
-        high_in_zone = (
-            (output["High"] >= ref * (1 - pullback_pct))
-            & (output["High"] <= ref * (1 + pullback_pct))
-        )
-        close_ok = output["Close"] <= ref
-        return has_ref & high_in_zone & close_ok
-
-    output["bear_cond_3"] = _bear_pb("black_base") | _bear_pb("red_base")
-
-    # Rolling aggregation: was the condition True in ANY of the last N bars per stock?
-    raw_conds = [
-        "bull_cond_1", "bull_cond_2", "bull_cond_3",
-        "bear_cond_1", "bear_cond_2", "bear_cond_3",
-    ]
-    for col in raw_conds:
-        output[f"{col}_in_window"] = (
-            output.groupby("StockCode")[col]
-            .transform(
-                lambda x: x.astype(float).rolling(lookback_bars, min_periods=1).max() > 0
-            )
-        )
-
-    output["bullish_methods_count"] = (
-        output["bull_cond_1_in_window"].astype(int)
-        + output["bull_cond_2_in_window"].astype(int)
-        + output["bull_cond_3_in_window"].astype(int)
+    output["red_line_raw"] = np.where(
+        output["red_attack_success"], output["prev_close"], np.nan
     )
-    output["bearish_methods_count"] = (
-        output["bear_cond_1_in_window"].astype(int)
-        + output["bear_cond_2_in_window"].astype(int)
-        + output["bear_cond_3_in_window"].astype(int)
+    output["black_line_raw"] = np.where(
+        output["black_attack_success"], output["prev_close"], np.nan
     )
 
-    output["final_methods_direction"] = np.select(
-        [
-            output["bullish_methods_count"] > output["bearish_methods_count"],
-            output["bearish_methods_count"] > output["bullish_methods_count"],
-        ],
-        ["Bullish", "Bearish"],
-        default="None",
-    )
-    output["final_methods_count"] = output[
-        ["bullish_methods_count", "bearish_methods_count"]
-    ].max(axis=1)
-
+    output["red_line"] = output.groupby("StockCode")["red_line_raw"].transform("ffill")
+    output["black_line"] = output.groupby("StockCode")["black_line_raw"].transform("ffill")
     return output
 
 
-def attach_investor_flow_flags(
-    df: pd.DataFrame,
-    investor_flow_df: pd.DataFrame,
-    consecutive_days: int = 3,
-) -> pd.DataFrame:
-    """Attach recent N-day institutional buy/sell flags to bars by stock and date.
+def _rolling_any(df: pd.DataFrame, column: str, lookback_bars: int) -> pd.Series:
+    """True if `column` was True in ANY of the last lookback_bars rows, per StockCode."""
+    return df.groupby("StockCode")[column].transform(
+        lambda x: x.astype(float).rolling(lookback_bars, min_periods=1).max() > 0
+    )
 
-    Institutional flow is calculated from daily public data and mapped to each bar
-    using the latest available daily record on or before that bar's Date.
-    """
+
+def add_bullish_three_conditions(df: pd.DataFrame, lookback_bars: int) -> pd.DataFrame:
+    """Compute Bullish Three-Condition columns A / B / C, their windows and score."""
     output = df.copy()
-    output["Date"] = pd.to_datetime(output["Date"], errors="coerce")
-    output = output.dropna(subset=["Date"]).copy()
-    output["BaseCode"] = output["StockCode"].astype(str).str.split(".").str[0]
-    consecutive_days = max(int(consecutive_days), 1)
+    grouped = output.groupby("StockCode")
 
-    flag_columns = [
-        "foreign_buy_streak_ok",
-        "trust_buy_streak_ok",
-        "foreign_sell_streak_ok",
-        "trust_sell_streak_ok",
-    ]
-    if investor_flow_df is None or investor_flow_df.empty:
-        for col in flag_columns:
-            output[col] = False
-        return output
+    prev_close = grouped["Close"].shift(1)
+    prev_black_line = grouped["black_line"].shift(1)
 
-    investor = investor_flow_df.copy()
-    investor["Date"] = pd.to_datetime(investor["Date"], errors="coerce")
-    investor["BaseCode"] = investor["BaseCode"].astype(str).str.strip()
-    investor["foreign_net"] = pd.to_numeric(investor["foreign_net"], errors="coerce").fillna(0)
-    investor["trust_net"] = pd.to_numeric(investor["trust_net"], errors="coerce").fillna(0)
-    investor = investor.dropna(subset=["Date"]).sort_values(["BaseCode", "Date"]).reset_index(drop=True)
+    red_line = output["red_line"]
+    black_line = output["black_line"]
 
-    investor["foreign_buy_streak_ok"] = investor.groupby("BaseCode")["foreign_net"].transform(
-        lambda x: x.gt(0).rolling(consecutive_days, min_periods=consecutive_days).sum().eq(consecutive_days)
-    )
-    investor["foreign_sell_streak_ok"] = investor.groupby("BaseCode")["foreign_net"].transform(
-        lambda x: x.lt(0).rolling(consecutive_days, min_periods=consecutive_days).sum().eq(consecutive_days)
-    )
-    investor["trust_buy_streak_ok"] = investor.groupby("BaseCode")["trust_net"].transform(
-        lambda x: x.gt(0).rolling(consecutive_days, min_periods=consecutive_days).sum().eq(consecutive_days)
-    )
-    investor["trust_sell_streak_ok"] = investor.groupby("BaseCode")["trust_net"].transform(
-        lambda x: x.lt(0).rolling(consecutive_days, min_periods=consecutive_days).sum().eq(consecutive_days)
+    # A: Big Red Attack Success appears.
+    output["bull_A_daily"] = output["red_attack_success"].astype(bool)
+
+    # B: break above the latest black_line. NaN black_line -> False.
+    output["bull_B_break_black_daily"] = (
+        prev_black_line.notna()
+        & black_line.notna()
+        & (prev_close <= prev_black_line)
+        & (output["Close"] > black_line)
+    ).fillna(False)
+
+    # C: retest red_line / black_line as support and hold. NaN line -> False.
+    output["bull_C_retest_red_line_daily"] = (
+        red_line.notna() & (output["Low"] <= red_line) & (output["Close"] >= red_line)
+    ).fillna(False)
+    output["bull_C_retest_black_line_daily"] = (
+        black_line.notna() & (output["Low"] <= black_line) & (output["Close"] >= black_line)
+    ).fillna(False)
+    output["bull_C_retest_support_daily"] = (
+        output["bull_C_retest_red_line_daily"] | output["bull_C_retest_black_line_daily"]
     )
 
-    merged_groups: list[pd.DataFrame] = []
-    for base_code, stock_df in output.sort_values(["BaseCode", "Date"]).groupby("BaseCode", sort=False):
-        flow_df = (
-            investor[investor["BaseCode"] == str(base_code).strip()][["Date", *flag_columns]]
-            .drop_duplicates(subset=["Date"], keep="last")
-            .sort_values("Date")
-            .reset_index(drop=True)
-        )
-        if flow_df.empty:
-            stock_output = stock_df.copy()
-            for col in flag_columns:
-                stock_output[col] = False
-        else:
-            stock_output = (
-                stock_df
-                .drop(columns=[col for col in flag_columns if col in stock_df.columns])
-                .sort_values("Date")
-                .reset_index(drop=True)
-            )
-            last_flow_date = flow_df["Date"].max()
-            stock_output = pd.merge_asof(
-                stock_output,
-                flow_df,
-                on="Date",
-                direction="backward",
-            )
-            future_mask = stock_output["Date"] > last_flow_date
-            for col in flag_columns:
-                stock_output[col] = pd.array(stock_output[col], dtype="boolean").fillna(False).astype(bool)
-                if future_mask.any():
-                    stock_output.loc[future_mask, col] = False
-        merged_groups.append(stock_output)
+    # Rolling windows: did the daily condition appear in the last lookback_bars bars?
+    output["bull_A_window"] = _rolling_any(output, "bull_A_daily", lookback_bars)
+    output["bull_B_window"] = _rolling_any(output, "bull_B_break_black_daily", lookback_bars)
+    output["bull_C_window"] = _rolling_any(output, "bull_C_retest_support_daily", lookback_bars)
 
-    merged = pd.concat(merged_groups, ignore_index=True)
-    for col in flag_columns:
-        merged[col] = pd.array(merged[col], dtype="boolean").fillna(False).astype(bool)
-    return merged.sort_values(["StockCode", "Date"]).reset_index(drop=True)
+    output["bull_score"] = (
+        output["bull_A_window"].astype(int)
+        + output["bull_B_window"].astype(int)
+        + output["bull_C_window"].astype(int)
+    )
+    output["bull_signal"] = output["bull_score"] >= 2
+    return output
+
+
+def add_bearish_three_conditions(df: pd.DataFrame, lookback_bars: int) -> pd.DataFrame:
+    """Compute Bearish Three-Condition columns A / B / C, their windows and score."""
+    output = df.copy()
+    grouped = output.groupby("StockCode")
+
+    prev_close = grouped["Close"].shift(1)
+    prev_red_line = grouped["red_line"].shift(1)
+
+    red_line = output["red_line"]
+    black_line = output["black_line"]
+
+    # A: Big Black Attack Success appears.
+    output["bear_A_daily"] = output["black_attack_success"].astype(bool)
+
+    # B: break below the latest red_line. NaN red_line -> False.
+    output["bear_B_break_red_daily"] = (
+        prev_red_line.notna()
+        & red_line.notna()
+        & (prev_close >= prev_red_line)
+        & (output["Close"] < red_line)
+    ).fillna(False)
+
+    # C: retest red_line / black_line as resistance and fail. NaN line -> False.
+    output["bear_C_retest_red_line_daily"] = (
+        red_line.notna() & (output["High"] >= red_line) & (output["Close"] <= red_line)
+    ).fillna(False)
+    output["bear_C_retest_black_line_daily"] = (
+        black_line.notna() & (output["High"] >= black_line) & (output["Close"] <= black_line)
+    ).fillna(False)
+    output["bear_C_retest_resistance_daily"] = (
+        output["bear_C_retest_red_line_daily"] | output["bear_C_retest_black_line_daily"]
+    )
+
+    output["bear_A_window"] = _rolling_any(output, "bear_A_daily", lookback_bars)
+    output["bear_B_window"] = _rolling_any(output, "bear_B_break_red_daily", lookback_bars)
+    output["bear_C_window"] = _rolling_any(output, "bear_C_retest_resistance_daily", lookback_bars)
+
+    output["bear_score"] = (
+        output["bear_A_window"].astype(int)
+        + output["bear_B_window"].astype(int)
+        + output["bear_C_window"].astype(int)
+    )
+    output["bear_signal"] = output["bear_score"] >= 2
+    return output
+
+
+def add_volume_filter(df: pd.DataFrame, min_volume: float) -> pd.DataFrame:
+    """Apply the simple volume filter and derive the final bull/bear signals."""
+    output = df.copy()
+    volume = pd.to_numeric(output["Volume"], errors="coerce").fillna(0)
+    output["volume_pass"] = volume >= min_volume
+    output["final_bull_signal"] = output["bull_signal"] & output["volume_pass"]
+    output["final_bear_signal"] = output["bear_signal"] & output["volume_pass"]
+    return output
+
+
+def add_lookback_rank(df: pd.DataFrame, lookback_bars: int) -> pd.DataFrame:
+    """Rank bars from most recent (1) to oldest, per StockCode.
+
+    in_lookback_window is True when lookback_rank <= lookback_bars, i.e. the bar is
+    among the most recent lookback_bars K-bars for that stock.
+    """
+    output = _ensure_sorted(df)
+    output["lookback_rank"] = output.groupby("StockCode").cumcount(ascending=False) + 1
+    output["in_lookback_window"] = output["lookback_rank"] <= int(lookback_bars)
+    return output
 
 
 def run_signal_pipeline(df: pd.DataFrame, params: dict) -> pd.DataFrame:
-    """Run the full signal pipeline:
+    """Run the full signal pipeline in the correct order.
 
     1. prev_close
-    2. Attack signals (independent boolean masks — no opposite-side conversion)
-    3. Base lines (red_base, black_base via forward-fill)
-    4. Three Methods conditions (rolling lookback aggregation)
+    2. Attack signals (independent masks — no opposite-side conversion)
+    3. Attack lines (red_line, black_line via forward-fill)
+    4. Bullish three conditions
+    5. Bearish three conditions
+    6. Volume filter -> final signals
+    7. Lookback rank / window flag
     """
     if df is None or df.empty:
         return df.copy() if df is not None else pd.DataFrame()
 
-    lookback_bars = int(params.get("lookback_bars", 10))
-    pullback_pct = float(params.get("pullback_pct", 2.0)) / 100.0  # convert % to fraction
+    lookback_bars = max(int(params.get("lookback_bars", 10)), 1)
+    min_volume = float(params.get("min_volume", 2000))
 
     output = add_prev_close(df)
     output = add_attack_signals(output)
-    output = add_base_lines(output)
-    output = add_three_methods_conditions(output, lookback_bars, pullback_pct)
+    output = add_attack_lines(output)
+    output = add_bullish_three_conditions(output, lookback_bars)
+    output = add_bearish_three_conditions(output, lookback_bars)
+    output = add_volume_filter(output, min_volume)
+    output = add_lookback_rank(output, lookback_bars)
     return output.sort_values(["StockCode", "Date"]).reset_index(drop=True)
