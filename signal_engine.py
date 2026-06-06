@@ -284,3 +284,119 @@ def run_signal_pipeline(df: pd.DataFrame, params: dict) -> pd.DataFrame:
     output = add_volume_filter(output, min_volume)
     output = add_lookback_rank(output, lookback_bars)
     return output.sort_values(["StockCode", "Date"]).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# 外資 / 投信 連續買入
+# ---------------------------------------------------------------------------
+_INVESTOR_COUNT_COLUMNS = ["foreign_buy_streak", "trust_buy_streak"]
+_INVESTOR_FLAG_COLUMNS = ["foreign_buy_streak_ok", "trust_buy_streak_ok"]
+
+
+def _consecutive_true_streak(mask: pd.Series) -> pd.Series:
+    """Running count of consecutive True values, resetting to 0 on each False."""
+    mask = mask.astype(bool)
+    run_id = (~mask).cumsum()
+    return mask.groupby(run_id).cumsum().astype(int)
+
+
+def attach_investor_flow_flags(
+    df: pd.DataFrame,
+    investor_flow_df: pd.DataFrame,
+    consecutive_days: int = 3,
+) -> pd.DataFrame:
+    """Attach 外資 / 投信 consecutive net-buy streaks and "達標" flags to each bar.
+
+    Institutional net buy/sell is daily public data. The consecutive-buy streak is
+    computed on the daily series per stock, then mapped to each K-bar using the
+    latest daily record on or before that bar's Date (merge_asof, backward).
+
+    foreign_buy_streak / trust_buy_streak : consecutive net-buy day count as of the bar.
+    foreign_buy_streak_ok / trust_buy_streak_ok : streak >= consecutive_days.
+
+    Always defensive: missing/empty flow data -> streak 0 and flag False, never crashes.
+    """
+    output = df.copy()
+    consecutive_days = max(int(consecutive_days), 1)
+    # Drop any pre-existing institutional columns so re-attaching is idempotent.
+    output = output.drop(
+        columns=[c for c in (_INVESTOR_COUNT_COLUMNS + _INVESTOR_FLAG_COLUMNS) if c in output.columns]
+    )
+
+    if output.empty:
+        for col in _INVESTOR_COUNT_COLUMNS:
+            output[col] = pd.Series(dtype=int)
+        for col in _INVESTOR_FLAG_COLUMNS:
+            output[col] = pd.Series(dtype=bool)
+        return output
+
+    output["Date"] = pd.to_datetime(output["Date"], errors="coerce")
+    output["_BaseCode"] = output["StockCode"].astype(str).str.split(".").str[0]
+
+    def _empty_result(frame: pd.DataFrame) -> pd.DataFrame:
+        frame = frame.copy()
+        for col in _INVESTOR_COUNT_COLUMNS:
+            frame[col] = 0
+        for col in _INVESTOR_FLAG_COLUMNS:
+            frame[col] = False
+        return frame.drop(columns=["_BaseCode"])
+
+    if investor_flow_df is None or investor_flow_df.empty:
+        return _empty_result(output)
+
+    investor = investor_flow_df.copy()
+    investor["Date"] = pd.to_datetime(investor["Date"], errors="coerce")
+    investor["BaseCode"] = investor["BaseCode"].astype(str).str.strip()
+    investor["foreign_net"] = pd.to_numeric(investor["foreign_net"], errors="coerce").fillna(0)
+    investor["trust_net"] = pd.to_numeric(investor["trust_net"], errors="coerce").fillna(0)
+    investor = (
+        investor.dropna(subset=["Date"]).sort_values(["BaseCode", "Date"]).reset_index(drop=True)
+    )
+    if investor.empty:
+        return _empty_result(output)
+
+    investor["foreign_buy_streak"] = investor.groupby("BaseCode")["foreign_net"].transform(
+        lambda s: _consecutive_true_streak(s > 0)
+    )
+    investor["trust_buy_streak"] = investor.groupby("BaseCode")["trust_net"].transform(
+        lambda s: _consecutive_true_streak(s > 0)
+    )
+
+    merged_groups: list[pd.DataFrame] = []
+    for base_code, stock_df in output.sort_values(["_BaseCode", "Date"]).groupby(
+        "_BaseCode", sort=False
+    ):
+        flow = (
+            investor[investor["BaseCode"] == str(base_code).strip()][
+                ["Date", "foreign_buy_streak", "trust_buy_streak"]
+            ]
+            .drop_duplicates(subset=["Date"], keep="last")
+            .sort_values("Date")
+            .reset_index(drop=True)
+        )
+        stock_sorted = stock_df.sort_values("Date").reset_index(drop=True)
+        if flow.empty:
+            for col in _INVESTOR_COUNT_COLUMNS:
+                stock_sorted[col] = 0
+        else:
+            last_flow_date = flow["Date"].max()
+            stock_sorted = pd.merge_asof(stock_sorted, flow, on="Date", direction="backward")
+            future_mask = stock_sorted["Date"] > last_flow_date
+            for col in _INVESTOR_COUNT_COLUMNS:
+                stock_sorted[col] = (
+                    pd.to_numeric(stock_sorted[col], errors="coerce").fillna(0).astype(int)
+                )
+                if future_mask.any():
+                    stock_sorted.loc[future_mask, col] = 0
+        merged_groups.append(stock_sorted)
+
+    merged = pd.concat(merged_groups, ignore_index=True)
+    for col in _INVESTOR_COUNT_COLUMNS:
+        merged[col] = pd.to_numeric(merged[col], errors="coerce").fillna(0).astype(int)
+    merged["foreign_buy_streak_ok"] = merged["foreign_buy_streak"] >= consecutive_days
+    merged["trust_buy_streak_ok"] = merged["trust_buy_streak"] >= consecutive_days
+    return (
+        merged.drop(columns=["_BaseCode"])
+        .sort_values(["StockCode", "Date"])
+        .reset_index(drop=True)
+    )

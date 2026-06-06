@@ -23,6 +23,7 @@ from signal_engine import (  # noqa: E402
     add_attack_lines,
     add_attack_signals,
     add_prev_close,
+    attach_investor_flow_flags,
     run_signal_pipeline,
 )
 
@@ -242,6 +243,76 @@ class ResampleAndDefensiveTests(unittest.TestCase):
         self.assertFalse(out["red_attack_success"].any())
         self.assertFalse(out["black_attack_success"].any())
         self.assertEqual(out.iloc[0]["attack_type"], "No Attack")
+
+
+class InvestorFlowTests(unittest.TestCase):
+    def _bars(self, dates, stock="2330.TW"):
+        n = len(dates)
+        return pd.DataFrame(
+            {
+                "Date": pd.to_datetime(dates),
+                "StockCode": [stock] * n,
+                "Open": [100] * n,
+                "High": [101] * n,
+                "Low": [99] * n,
+                "Close": [100] * n,
+                "Volume": [10_000] * n,
+            }
+        )
+
+    def test_foreign_and_trust_consecutive_buy_streak_meets_threshold(self):
+        bars = self._bars(["2026-01-07"])  # latest bar after 3 buy days
+        flow = pd.DataFrame(
+            {
+                "Date": pd.to_datetime(["2026-01-05", "2026-01-06", "2026-01-07"]),
+                "BaseCode": ["2330"] * 3,
+                "foreign_net": [10, 20, 30],   # 3 consecutive net-buy days
+                "trust_net": [5, 5, 5],        # 3 consecutive net-buy days
+            }
+        )
+        out = attach_investor_flow_flags(bars, flow, consecutive_days=3)
+        row = out.iloc[0]
+        self.assertEqual(row["foreign_buy_streak"], 3)
+        self.assertEqual(row["trust_buy_streak"], 3)
+        self.assertTrue(row["foreign_buy_streak_ok"])
+        self.assertTrue(row["trust_buy_streak_ok"])
+
+    def test_streak_resets_on_sell_day_and_misses_threshold(self):
+        bars = self._bars(["2026-01-07"])
+        flow = pd.DataFrame(
+            {
+                "Date": pd.to_datetime(["2026-01-05", "2026-01-06", "2026-01-07"]),
+                "BaseCode": ["2330"] * 3,
+                "foreign_net": [10, -5, 20],   # sell day resets streak -> latest streak = 1
+                "trust_net": [5, 5, 5],
+            }
+        )
+        out = attach_investor_flow_flags(bars, flow, consecutive_days=3)
+        row = out.iloc[0]
+        self.assertEqual(row["foreign_buy_streak"], 1)
+        self.assertFalse(row["foreign_buy_streak_ok"])
+        self.assertTrue(row["trust_buy_streak_ok"])
+
+    def test_empty_flow_yields_false_flags_without_crashing(self):
+        bars = self._bars(["2026-01-07", "2026-01-08"])
+        out = attach_investor_flow_flags(bars, pd.DataFrame(), consecutive_days=3)
+        self.assertEqual(list(out["foreign_buy_streak"]), [0, 0])
+        self.assertFalse(out["foreign_buy_streak_ok"].any())
+        self.assertFalse(out["trust_buy_streak_ok"].any())
+
+    def test_non_taiwan_symbol_gets_false_flags(self):
+        bars = self._bars(["2026-01-07"], stock="AAPL")
+        flow = pd.DataFrame(
+            {
+                "Date": pd.to_datetime(["2026-01-05", "2026-01-06", "2026-01-07"]),
+                "BaseCode": ["2330"] * 3,
+                "foreign_net": [10, 20, 30],
+                "trust_net": [5, 5, 5],
+            }
+        )
+        out = attach_investor_flow_flags(bars, flow, consecutive_days=3)
+        self.assertEqual(out.iloc[0]["foreign_buy_streak"], 0)
+        self.assertFalse(out.iloc[0]["foreign_buy_streak_ok"])
 
 
 if __name__ == "__main__":

@@ -1,58 +1,59 @@
-# Bullish / Bearish Three-Condition Stock Screener
+# 多頭 / 空頭 三條件選股系統（大紅攻 / 大黑攻）
 
-> **Disclaimer: This tool is for stock research and screening only. It is NOT investment advice.**
+> **聲明：本工具僅供股票研究與篩選參考，並不構成任何投資建議。**
 
-A Python + Streamlit screener that automatically downloads stock OHLCV data from the
-internet (via `yfinance`) and screens both the **Bullish** and **Bearish**
-**Three-Condition Method**, based on **Big Red Attack** / **Big Black Attack** lines.
+以 Python + Streamlit 製作的選股系統，會自動從網路（透過 `yfinance`）下載股票 OHLCV
+資料，並依據**大紅攻（Big Red Attack）/ 大黑攻（Big Black Attack）**均線，篩選**多頭**與
+**空頭**的**三條件法**訊號。介面、圖表與 Excel 報表皆為**繁體中文**，並可加入
+**外資 / 投信連續買入**條件。
 
 ---
 
-## Installation
+## 安裝
 
-Requires **Python 3.11+**.
+需要 **Python 3.11 以上**。
 
 ```bash
-# (optional) create and activate a virtual environment
+# （選用）建立並啟用虛擬環境
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 
 pip install -r requirements.txt
 ```
 
-## Running the app
+## 執行
 
 ```bash
 streamlit run app.py
 ```
 
-The app opens in your browser. Configure the inputs in the sidebar and click
-**Run Screening**.
+瀏覽器會自動開啟。於左側設定參數後，按下 **開始篩選**。
 
-## Deploying to Streamlit Cloud
+## 部署到 Streamlit Cloud
 
-1. Push this repository to GitHub.
-2. Go to [share.streamlit.io](https://share.streamlit.io) and create a new app.
-3. Select the repository and branch, and set the main file to **`app.py`**.
-4. Streamlit Cloud installs `requirements.txt` automatically and runs the app.
+1. 將此專案推送到 GitHub。
+2. 前往 [share.streamlit.io](https://share.streamlit.io) 建立新 App。
+3. 選擇對應的 repository 與分支，主程式設定為 **`app.py`**。
+4. Streamlit Cloud 會自動安裝 `requirements.txt` 並啟動。
 
-No local absolute paths are used, so the project runs unchanged on Streamlit Cloud.
+專案未使用任何本機絕對路徑，因此可直接部署於 Streamlit Cloud。
 
 ---
 
-## How to use
+## 使用方式
 
-In the sidebar you can:
+左側側邊欄可設定：
 
-- Paste a **stock list** (one symbol per line), or
-- Upload a **CSV** that contains a `StockCode` column (see `sample_stock_list.csv`).
-- Choose a **date range** (`start_date`, `end_date`).
-- Choose the **analysis timeframe**: Daily K / Weekly K / Monthly K.
-- Set the **minimum volume** (default `2000`).
-- Set the **lookback bars** (default `10`).
-- Choose a **signal direction filter**: Both / Bullish only / Bearish only.
+- **股票清單**（每行一個代號），或
+- 上傳 **CSV**（需包含 `StockCode` 欄位，可參考 `sample_stock_list.csv`）。
+- **日期區間**（起始日期、結束日期）。
+- **分析週期**：日K / 週K / 月K。
+- **最低成交量**（預設 `2000`）。
+- **回看根數**（預設 `10`）。
+- **訊號方向篩選**：全部 / 只看多頭 / 只看空頭。
+- **外資 / 投信連續買入**：可啟用、設定**連續買入天數**（預設 3 日），並可勾選作為篩選條件。
 
-Default stock list:
+預設股票清單：
 
 ```
 2330.TW
@@ -62,136 +63,145 @@ Default stock list:
 6182.TWO
 ```
 
-After clicking **Run Screening** you get: a download status panel, a matching-signals
-table, a latest-summary table, an interactive candlestick chart, and an Excel download.
+按下 **開始篩選** 後，會顯示：下載狀態、符合訊號表、最新摘要表、互動式 K 線圖，
+以及 Excel 報表下載按鈕。
 
 ---
 
-## Strategy definitions
+## 策略定義
 
-`prev_close` = the **previous K-bar's close** (computed separately per stock).
+`前一根收盤`（prev_close）= 前一根 K 棒的收盤價（每檔股票各自計算）。
 
-The attack **direction** is determined **only** by `Open` versus `prev_close`.
-The `Close` **only** decides whether the attack *succeeded* or *failed*.
-**A failed attack never becomes the opposite-side attack.**
+攻擊**方向**僅由 `開盤` 相對於 `前一根收盤` 決定；
+`收盤` 只決定該攻擊是**成功**還是**失敗**。
+**失敗的攻擊絕不會變成反向攻擊。**
 
-### Big Red Attack
+### 大紅攻
 
-- **Success**: `Open > prev_close` **AND** `Close > prev_close` → creates a **red_line**.
-- **Failed**: `Open > prev_close` **AND** `Close < prev_close` → *only* a failed bullish
-  attack. **Not** a Big Black Attack. Does **not** create or update `black_line`.
+- **成功**：`開盤 > 前一根收盤` **且** `收盤 > 前一根收盤` → 建立一條 **紅線**。
+- **失敗**：`開盤 > 前一根收盤` **且** `收盤 < 前一根收盤` → 僅為失敗的多方攻擊。
+  **不是**大黑攻，也**不會**建立或更新黑線。
 
-### Big Black Attack
+### 大黑攻
 
-- **Success**: `Open < prev_close` **AND** `Close < prev_close` → creates a **black_line**.
-- **Failed**: `Open < prev_close` **AND** `Close > prev_close` → *only* a failed bearish
-  attack. **Not** a Big Red Attack. Does **not** create or update `red_line`.
+- **成功**：`開盤 < 前一根收盤` **且** `收盤 < 前一根收盤` → 建立一條 **黑線**。
+- **失敗**：`開盤 < 前一根收盤` **且** `收盤 > 前一根收盤` → 僅為失敗的空方攻擊。
+  **不是**大紅攻，也**不會**建立或更新紅線。
 
-If `Open == prev_close`, the bar is **No Attack**.
+若 `開盤 == 前一根收盤`，該根視為 **無攻擊**。
 
-### red_line
+### 紅線（red_line）
 
-Created **only** by Big Red Attack Success:
-
-```
-red_line_raw = prev_close   (only on red_attack_success bars, else NaN)
-red_line     = forward-fill of red_line_raw, separately per StockCode
-```
-
-### black_line
-
-Created **only** by Big Black Attack Success:
+**僅由大紅攻成功**建立：
 
 ```
-black_line_raw = prev_close (only on black_attack_success bars, else NaN)
-black_line     = forward-fill of black_line_raw, separately per StockCode
+red_line_raw = 前一根收盤   （僅在大紅攻成功的 K 棒，其餘為 NaN）
+red_line     = 對 red_line_raw 依股票各自向前填補（ffill）
+```
+
+### 黑線（black_line）
+
+**僅由大黑攻成功**建立：
+
+```
+black_line_raw = 前一根收盤 （僅在大黑攻成功的 K 棒，其餘為 NaN）
+black_line     = 對 black_line_raw 依股票各自向前填補（ffill）
 ```
 
 ---
 
-## Bullish Three-Condition Method
+## 多頭三條件法
 
-Within the most recent `lookback_bars` K-bars, at least **2 of 3** must be true:
+在最近 `回看根數` 根 K 棒內，至少符合 **3 項中的 2 項**：
 
-- **A** — Big Red Attack Success appears.
-- **B** — Break above the latest `black_line`:
-  `previous Close <= previous black_line` **AND** `current Close > current black_line`.
-- **C** — Retest `red_line` or `black_line` as **support** and hold:
-  `Low <= line_price` **AND** `Close >= line_price`.
+- **A** — 出現大紅攻成功。
+- **B** — 突破最新黑線：`前一根收盤 <= 前一根黑線` **且** `當根收盤 > 當根黑線`。
+- **C** — 回測紅線或黑線作為**支撐**並守住：`最低 <= 均線價` **且** `收盤 >= 均線價`。
 
 ```
 bull_score        = bull_A_window + bull_B_window + bull_C_window
 bull_signal       = bull_score >= 2
-final_bull_signal = bull_signal AND volume_pass
+final_bull_signal = bull_signal 且 量能達標
 ```
 
-## Bearish Three-Condition Method
+## 空頭三條件法
 
-Within the most recent `lookback_bars` K-bars, at least **2 of 3** must be true:
+在最近 `回看根數` 根 K 棒內，至少符合 **3 項中的 2 項**：
 
-- **A** — Big Black Attack Success appears.
-- **B** — Break below the latest `red_line`:
-  `previous Close >= previous red_line` **AND** `current Close < current red_line`.
-- **C** — Retest `red_line` or `black_line` as **resistance** and fail:
-  `High >= line_price` **AND** `Close <= line_price`.
+- **A** — 出現大黑攻成功。
+- **B** — 跌破最新紅線：`前一根收盤 >= 前一根紅線` **且** `當根收盤 < 當根紅線`。
+- **C** — 反彈回測紅線或黑線作為**反壓**並失敗：`最高 >= 均線價` **且** `收盤 <= 均線價`。
 
 ```
 bear_score        = bear_A_window + bear_B_window + bear_C_window
 bear_signal       = bear_score >= 2
-final_bear_signal = bear_signal AND volume_pass
+final_bear_signal = bear_signal 且 量能達標
 ```
 
-The A / B / C conditions are calculated **independently**. They do not need to appear
-in order, do not need to be consecutive, and can appear on the same K-bar.
+A / B / C 三項**各自獨立計算**，不需依序、不需連續，也可出現在同一根 K 棒。
 
 ---
 
-## Daily K / Weekly K / Monthly K
+## 外資 / 投信 連續買入
 
-Only **daily** data is downloaded. Weekly and Monthly bars are produced by
-**resampling the daily OHLCV** per stock (never downloaded directly):
-
-| Field  | Weekly / Monthly value                  |
-|--------|------------------------------------------|
-| Open   | first trading day's open in the period   |
-| High   | highest high in the period               |
-| Low    | lowest low in the period                 |
-| Close  | last trading day's close in the period   |
-| Volume | sum of volume in the period              |
-| Date   | last trading day's date in the period    |
-
-Each stock is resampled separately; stocks are never mixed. A `Timeframe` column
-records `D`, `W`, or `M`.
-
-## Volume filter
-
-```
-volume_pass = Volume >= min_volume     (default min_volume = 2000)
-```
-
-For Weekly / Monthly K, `Volume` is the resampled (summed) period volume.
-
-## Lookback bars
-
-For each stock, only the most recent `lookback_bars` K-bars are checked
-(`lookback_rank = 1` is the most recent bar). The results include bars where
-`final_bull_signal` or `final_bear_signal` is True within that window, plus a
-latest-summary table with one row per stock per signal direction.
+- 於側邊欄設定**連續買入天數** `N`（預設 3）。
+- 系統會從台股公開資料（上市 TWSE T86、上櫃 TPEx 三大法人）抓取每日法人買賣超，
+  計算**外資**與**投信**各自的連續買超天數，並依門檻標示是否達標：
+  - `外資連買天數` / `外資連買達標（連買天數 >= N）`
+  - `投信連買天數` / `投信連買達標（連買天數 >= N）`
+- 法人資料為每日資料，會以「該 K 棒日期當日或之前最近一筆」對應到每根 K 棒（含週K / 月K）。
+- 可勾選 **需外資連買達標** / **需投信連買達標** 作為額外篩選條件。
+- 此功能僅適用台股（4 位數代號）；若為非台股或暫時無法連線，相關欄位以 `0 / 否` 顯示，不影響其餘篩選。
 
 ---
 
-## Excel export
+## 日K / 週K / 月K
 
-The downloadable workbook contains seven sheets: `All_Data`, `Matching_Signals`,
-`Bullish_Signals`, `Bearish_Signals`, `Latest_Summary`, `Failed_Downloads`, and
-`Parameter_Settings`.
+僅下載**日**資料。週K、月K 由日 OHLCV **依股票各自重新取樣**而成（不直接下載週/月資料）：
 
-## Testing the sample stock list
+| 欄位   | 週 / 月 取值              |
+|--------|----------------------------|
+| 開盤   | 期間第一個交易日的開盤      |
+| 最高   | 期間內的最高價              |
+| 最低   | 期間內的最低價              |
+| 收盤   | 期間最後一個交易日的收盤    |
+| 成交量 | 期間內成交量加總            |
+| 日期   | 期間最後一個交易日的日期    |
 
-`sample_stock_list.csv` contains the default symbols. Upload it in the sidebar (or
-just click **Run Screening** with the default text-area list) to verify the full
-download → resample → signal → display → export flow end to end.
+每檔股票各自取樣，絕不混合。`Timeframe` 欄位記錄 `D`、`W` 或 `M`。
+
+## 量能（成交量）篩選
+
+```
+量能達標 = 成交量 >= 最低成交量     （預設最低成交量 = 2000）
+```
+
+週K / 月K 的成交量為重新取樣（加總）後的期間量。
+
+## 回看根數
+
+每檔股票僅檢查最近 `回看根數` 根 K 棒（`回看排名 = 1` 為最新一根）。結果包含此區間內
+`final_bull_signal` 或 `final_bear_signal` 為真的 K 棒，並提供每檔股票、每個訊號方向各一列的
+最新摘要表。
 
 ---
 
-*This tool is for stock research and screening only. It is not investment advice.*
+## Excel 匯出
+
+可下載的活頁簿含七張工作表：`全部資料`、`符合訊號`、`多頭訊號`、`空頭訊號`、
+`最新摘要`、`下載失敗清單`、`參數設定`。
+
+## 以範例清單測試
+
+`sample_stock_list.csv` 內含預設代號。於側邊欄上傳該檔（或直接以預設文字清單按下
+**開始篩選**），即可完整驗證「下載 → 重新取樣 → 計算訊號 → 顯示 → 匯出」的流程。
+
+## 測試
+
+```bash
+python -m unittest tests.test_three_condition
+```
+
+---
+
+*本工具僅供股票研究與篩選參考，並不構成任何投資建議。*

@@ -1,13 +1,13 @@
-"""Excel export for the Bullish / Bearish Three-Condition Stock Screener.
+"""Excel 匯出 — 多頭 / 空頭三條件選股系統（繁體中文）。
 
-Produces an in-memory workbook with seven sheets:
-  1. All_Data           - all OHLCV data with every calculated column
-  2. Matching_Signals   - final_bull_signal OR final_bear_signal within lookback_bars
-  3. Bullish_Signals    - rows where final_bull_signal is True
-  4. Bearish_Signals    - rows where final_bear_signal is True
-  5. Latest_Summary     - one row per StockCode per signal direction
-  6. Failed_Downloads   - failed stock symbols
-  7. Parameter_Settings - the run parameters
+產生七張工作表（傳入的資料表已先轉為中文欄位/數值）：
+  1. 全部資料     - 所有 OHLCV 與計算欄位
+  2. 符合訊號     - 回看區間內 final_bull_signal 或 final_bear_signal 為真
+  3. 多頭訊號     - final_bull_signal 為真
+  4. 空頭訊號     - final_bear_signal 為真
+  5. 最新摘要     - 每檔股票每個訊號方向一列
+  6. 下載失敗清單 - 下載失敗的股票代號
+  7. 參數設定     - 本次執行參數
 """
 
 from __future__ import annotations
@@ -16,9 +16,11 @@ import io
 
 import pandas as pd
 
+import config
+
 
 def _sheet_frame(df: pd.DataFrame | None) -> pd.DataFrame:
-    """Return a safe copy for writing; empty frame when input is missing/empty."""
+    """回傳可安全寫入的副本；資料缺漏時回傳空表。"""
     if df is None or df.empty:
         return pd.DataFrame()
     return df.copy()
@@ -33,38 +35,37 @@ def create_excel_bytes(
     failed_list: list[str],
     params: dict,
 ) -> bytes:
-    """Build the seven-sheet workbook and return it as bytes."""
+    """組成七張工作表的活頁簿並回傳 bytes。"""
+    parameter_rows = [
+        (config.PARAMETER_LABELS.get(key, key), value)
+        for key, value in [
+            ("start_date", params.get("start_date", "")),
+            ("end_date", params.get("end_date", "")),
+            ("analysis_timeframe", params.get("analysis_timeframe", "")),
+            ("min_volume", params.get("min_volume", "")),
+            ("lookback_bars", params.get("lookback_bars", "")),
+            ("signal_direction_filter", params.get("signal_direction_filter", "")),
+            ("enable_investor_flow", params.get("enable_investor_flow", "")),
+            ("consecutive_buy_days", params.get("consecutive_buy_days", "")),
+            ("require_foreign_buy", params.get("require_foreign_buy", "")),
+            ("require_trust_buy", params.get("require_trust_buy", "")),
+        ]
+    ]
     parameter_sheet = pd.DataFrame(
-        {
-            "Parameter": [
-                "start_date",
-                "end_date",
-                "analysis_timeframe",
-                "min_volume",
-                "lookback_bars",
-                "signal_direction_filter",
-            ],
-            "Value": [
-                str(params.get("start_date", "")),
-                str(params.get("end_date", "")),
-                str(params.get("analysis_timeframe", "")),
-                params.get("min_volume", ""),
-                params.get("lookback_bars", ""),
-                str(params.get("signal_direction_filter", "")),
-            ],
-        }
+        {"參數": [r[0] for r in parameter_rows], "設定值": [str(r[1]) for r in parameter_rows]}
     )
 
-    failed_sheet = pd.DataFrame({"FailedStockCode": list(failed_list or [])})
+    failed_sheet = pd.DataFrame({"下載失敗股票代號": list(failed_list or [])})
 
+    names = config.EXCEL_SHEET_NAMES
     workbook = {
-        "All_Data": _sheet_frame(all_data),
-        "Matching_Signals": _sheet_frame(matching_signals),
-        "Bullish_Signals": _sheet_frame(bullish_signals),
-        "Bearish_Signals": _sheet_frame(bearish_signals),
-        "Latest_Summary": _sheet_frame(latest_summary),
-        "Failed_Downloads": failed_sheet,
-        "Parameter_Settings": parameter_sheet,
+        names["all_data"]: _sheet_frame(all_data),
+        names["matching"]: _sheet_frame(matching_signals),
+        names["bullish"]: _sheet_frame(bullish_signals),
+        names["bearish"]: _sheet_frame(bearish_signals),
+        names["summary"]: _sheet_frame(latest_summary),
+        names["failed"]: failed_sheet,
+        names["params"]: parameter_sheet,
     }
 
     output = io.BytesIO()
